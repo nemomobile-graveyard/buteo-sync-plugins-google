@@ -23,170 +23,157 @@
 
 #include "GAuth.h"
 #include "GTransport.h"
-#include <qjson/parser.h>
 #include <QVariantMap>
 #include <LogMacros.h>
 
 #include <QTextStream>
 #include <QFile>
+#include <QStringList>
+#include <QDebug>
+
+#include <Accounts/Manager>
+
+#include <oauth2data.h>
+
+#include <buteosyncfw/ProfileEngineDefs.h>
+
+using namespace Accounts;
+using namespace SignOn;
 
 /* Values obtained after registering with Google */
-const QString CODE_TAG            	("code");
-const QString CLIENT_ID_TAG	        ("client_id");
 const QString CLIENT_ID	            ("340286938476.apps.googleusercontent.com");
-const QString SCOPE_TAG             ("scope");
-const QString CONTACTS_SCOPE_URL	("https://www.google.com/m8/feeds/");
-const QString CLIENT_SECRET_TAG		("client_secret");
 const QString CLIENT_SECRET			("cE6huV6DyPQCKXo5AOg5Balm");
-const QString GRANT_TYPE_TAG		("grant_type");
-const QString GRANT_TYPE			("http://oauth.net/grant_type/device/1.0");
-const QString AUTH_URL				("https://accounts.google.com/o/oauth2/auth");
-const QString TOKEN_URI				("https://accounts.google.com/o/oauth2/token");
-const QString OAUTH_DEVICE_CODE_URL ("https://accounts.google.com/o/oauth2/device/code");
-const QString USER_INFO_PROFILE		("https://www.googleapis.com/auth/userinfo.profile");
-const QString AND					("&");
-const QString EQUALS				("=");
 
-GAuth::GAuth(QObject *parent) :
+const QString RESPONSE_TYPE         ("ResponseType");
+const QString SCOPE             	("Scope");
+const QString AUTH_PATH				("AuthPath");
+const QString TOKEN_PATH			("TokenPath");
+const QString REDIRECT_URI          ("RedirectUri");
+const QString HOST                  ("Host");
+const QString SLASH                 ("/");
+const QString AUTH                  ("auth");
+const QString AUTH_METHOD           ("method");
+const QString MECHANISM             ("mechanism");
+
+GAuth::GAuth(const quint32 accountId, const QString scope, QObject *parent) :
     QObject(parent)
 {
+    Manager *manager = new Manager();
+    mAccount = manager->account(accountId);
+    mScope = scope;
+}
+
+bool GAuth::init() {
+    if (mAccount == NULL) {
+        LOG_DEBUG("Account is not created... Cannot authenticate");
+        return false;
+    }
+
+    QVariant val = QVariant::String;
+    mAccount->value(AUTH + SLASH + AUTH_METHOD, val);
+    QString method = val.toString();
+    mAccount->value(AUTH + SLASH + MECHANISM, val);
+    QString mechanism = val.toString();
+
+    qint32 cId = mAccount->credentialsId();
+    //LOG_DEBUG("Got Credentials ID = " + cId);
+    if (cId == 0) {
+        QMap<MethodName,MechanismsList> methods;
+        methods.insert(method, QStringList()  << mechanism);
+        IdentityInfo *info = new IdentityInfo(mAccount->displayName(), "", methods);
+        info->setRealms(QStringList() << HOST);
+        info->setType(IdentityInfo::Application);
+
+        mIdentity = Identity::newIdentity(*info);
+        connect(mIdentity, SIGNAL(credentialsStored(const quint32)),
+                this, SLOT(credentialsStored(const quint32)));
+        connect(mIdentity, SIGNAL(error(const SignOn::Error &)),
+                this, SLOT(error(const SignOn::Error &)));
+
+        mIdentity->storeCredentials();
+    } else {
+        mIdentity = Identity::existingIdentity(cId);
+    }
+
+    mSession = mIdentity->createSession(QLatin1String("oauth2"));
+
+    connect(mSession, SIGNAL(response(const SignOn::SessionData &)),
+            this, SLOT(sessionResponse(const SignOn::SessionData &)));
+
+    connect(mSession, SIGNAL(error(const SignOn::Error &)),
+            this, SLOT(error(const SignOn::Error &)));
+
+    return true;
+}
+
+void GAuth::sessionResponse(const SessionData &sessionData) {
+    OAuth2PluginNS::OAuth2PluginTokenData response = sessionData.data<OAuth2PluginNS::OAuth2PluginTokenData>();
+    mToken = response.AccessToken();
+    LOG_DEBUG("Authenticated !!!");
+
+    emit success();
 }
 
 const QString GAuth::token()
 {
-    // FIXME: Read the token from file until accounts&sso
-    // integration is done
-    QFile file ("/tmp/access_token.txt");
-    file.open(QIODevice::ReadOnly | QIODevice::Text);
-    QTextStream in (&file);
-    iToken = in.readAll ();
-    if (iToken.endsWith ('\n'))
-        iToken.chop (1);
-    file.close ();
-    LOG_DEBUG("Token:" << iToken);
-    return iToken;
+    //LOG_DEBUG("Returning token.........." + mToken);
+    if (mToken.isEmpty()) {
+        authenticate();
+    }
+
+    return mToken;
 }
 
 void GAuth::authenticate()
 {
-    deviceAuth();
-    getToken();
-}
+    QVariant val = QVariant::String;
+    mAccount->value(AUTH + SLASH + AUTH_METHOD, val);
+    QString method = val.toString();
+    mAccount->value(AUTH + SLASH + MECHANISM, val);
+    QString mechanism = val.toString();
 
-void GAuth::getToken()
-{
-    if (iDeviceCode == "")
-    {
-        // FIXME: Error condition, emit an error signal
+    mAccount->value(AUTH + SLASH + method + SLASH + mechanism + SLASH + HOST, val);
+    QString host = val.toString();
+    mAccount->value(AUTH + SLASH + method + SLASH + mechanism + SLASH + AUTH_PATH, val);
+    QString auth_url = val.toString();
+    mAccount->value(AUTH + SLASH + method + SLASH + mechanism + SLASH + TOKEN_PATH, val);
+    QString token_url = val.toString();
+    mAccount->value(AUTH + SLASH + method + SLASH + mechanism + SLASH + REDIRECT_URI, val);
+    QString redirect_uri = val.toString();
+    mAccount->value(AUTH + SLASH + method + SLASH + mechanism + SLASH + RESPONSE_TYPE, val);
+    QString response_type = val.toString();
+
+    QStringList scope;
+    if (mScope.isEmpty()) {
+        QVariant val1 = QVariant::StringList;
+        mAccount->value(AUTH + SLASH + method + SLASH + mechanism + SLASH + SCOPE, val1);
+        scope.append(val1.toStringList());
+    } else {
+        scope.append(mScope);
     }
-    const QString data = CLIENT_ID_TAG + EQUALS + CLIENT_ID + AND +
-                         CLIENT_SECRET_TAG + EQUALS + CLIENT_SECRET + AND +
-                         CODE_TAG + EQUALS + iDeviceCode + AND +
-                         GRANT_TYPE_TAG + EQUALS + GRANT_TYPE;
 
-    if (iTransport != NULL)
-    {
-        delete iTransport;
-        iTransport = NULL;
-    }
-    iTransport = new GTransport();
-    iTransport->setUrl (TOKEN_URI);
-    iTransport->setData (data.toAscii ());
-    QObject::connect(iTransport, SIGNAL(finishedRequest()),
-                     this, SLOT(tokenResponse()));
-    iTransport->request(GTransport::POST);
+    OAuth2PluginNS::OAuth2PluginData data;
+    data.setClientId(CLIENT_ID);
+    data.setClientSecret(CLIENT_SECRET);
+    data.setHost(host);
+    data.setAuthPath(auth_url);
+    data.setTokenPath(token_url);
+    data.setRedirectUri(redirect_uri);
+    data.setResponseType(QStringList() << response_type);
+    data.setScope(scope);
+
+    mSession->process(data, mechanism);
 }
 
-void GAuth::tokenResponse()
-{
-    if (iTransport != NULL)
-    {
-        const QNetworkReply* reply = iTransport->reply();
-        if (reply->error() == QNetworkReply::NoError)
-        {
-            QByteArray body = iTransport->replyBody();
-            processTokenResponse(body);
-        }
-    }
+void GAuth::credentialsStored(const quint32 id) {
+    mAccount->setCredentialsId(id);
+    mAccount->sync();
+    //LOG_DEBUG("Credentials Stored.........." + id);
 }
 
-void GAuth::processTokenResponse(const QByteArray tokenJSON)
-{
-    /*
-    {
-      "access_token" : "ya29.AHES6ZRwtsotfOhe3Vu21XM6kCi7R4r-P1Fq19uvtVIaQ50", => this is used for auth header
-      "token_type" : "Bearer",
-      "expires_in" : 3600,
-      "id_token" : "eyJhbGciOiJSUzI1NiIsImtpZCI6ImQ3NzljOTIzZGJkNGNmN2Y4NTc3Y2EyMGIwODFkODEwOTQ1YzMxZDEifQ.eyJpc3MiOiJhY2NvdW50cy5nb29nbGUuY29tIiwiYXVkIjoiMzQwMjg2OTM4NDc2LmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29tIiwidG9rZW5faGFzaCI6IlJJcC03b21rZnRCUFZVU0tTbnAyTVEiLCJhdF9oYXNoIjoiUklwLTdvbWtmdEJQVlVTS1NucDJNUSIsImNpZCI6IjM0MDI4NjkzODQ3Ni5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbSIsImF6cCI6IjM0MDI4NjkzODQ3Ni5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbSIsImlkIjoiMTEwMzQ0MzcxNzQyMDg3OTk4MjIwIiwic3ViIjoiMTEwMzQ0MzcxNzQyMDg3OTk4MjIwIiwiaWF0IjoxMzY1NzAwODIzLCJleHAiOjEzNjU3MDQ3MjN9.Z3Bk4W-9q1aHOxQLKxdAjWf9jTYLAcD9uGEmW73FAjdWKNLufw0LCji3SPtSyJg3uMQTueievTp3xjPcVjfKzfokEq3fjUFn5bets7MLZ7Vr8Le6Yb0mhGcO0kefImfcufuVEXt9I-W-1OddCzyj4YfrYxtJ-eYRwXGOOA6dzZM",
-      "refresh_token" : "1/I-IcRJHdgy16BZZxSyPYF31OUGIfjLSLSBksU3eJT3Q"
-    }
-    */
+void GAuth::error(const SignOn::Error & error) {
+    printf(error.message().toStdString().c_str());
+    qDebug() << error.message();
 
-    /*
-    QJson::Parser parser;
-    bool ok;
-    QVariantMap result = parser.parse(tokenJSON, &ok).toMap();
-    if (ok)
-        iToken = result["access_token"].toString();
-    else
-        iToken = QString("");
-        */
-}
-
-void GAuth::deviceAuth()
-{
-    const QString data = CLIENT_ID_TAG + EQUALS + CLIENT_ID + AND +
-                         SCOPE_TAG + EQUALS + CONTACTS_SCOPE_URL + " " + USER_INFO_PROFILE;
-
-    // FIXME: Create a proper GTransport object
-    iTransport = new GTransport();
-    iTransport->setData (data.toAscii ());
-    iTransport->setUrl (OAUTH_DEVICE_CODE_URL);
-
-    QObject::connect(iTransport, SIGNAL(finishedRequest()),
-                     this, SLOT(deviceCodeResponse()));
-
-    iTransport->request(GTransport::POST);
-}
-
-void GAuth::deviceCodeResponse()
-{
-    if (iTransport != NULL)
-    {
-        const QNetworkReply* reply = iTransport->reply();
-        if (reply->error() == QNetworkReply::NoError)
-        {
-            QString body = iTransport->replyBody();
-            processDeviceCode(body.toAscii());
-        }
-    }
-}
-
-void GAuth::processDeviceCode(const QByteArray deviceCodeJSON)
-{
-    /*
-     Parse the json output and store the values
-     {
-       "device_code" : "4/OPkob1JigTUheZ72hm4fEmcHXy3E", => this will be used to get the token
-       "user_code" : "wkwnjjvj",
-       "verification_url" : "http://www.google.com/device",
-       "expires_in" : 1800,
-       "interval" : 5
-     }
-    */
-
-    /*
-    QJson::Parser parser;
-    bool ok;
-
-    QVariantMap result = parser.parse(deviceCodeJSON, &ok).toMap();
-    if (ok)
-        iDeviceCode = result["device_code"].toString();
-    else
-        iDeviceCode = QString("").toAscii();
-
-    LOG_DEBUG("Verification url:" << result["verification_url"].toString() <<
-              ", user_code:" << result["user_code"].toString() <<
-              ",device_code" << result["device_code"].toString());
-    */
+    emit failed();
 }

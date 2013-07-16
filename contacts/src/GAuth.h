@@ -27,15 +27,29 @@
 #include <QObject>
 #include "GTransport.h"
 
+#include <buteosyncfw/SyncCommonDefs.h>
+#include <SyncCommonDefs.h>
+#include <SyncProfile.h>
+#include <SignOn/AuthService>
+#include <SignOn/Identity>
+
+#include <Accounts/Account>
+
 class GAuth : public QObject
 {
     Q_OBJECT
 public:
-    explicit GAuth(QObject *parent = 0);
+    explicit GAuth(const quint32 accountId, const QString scope, QObject *parent = 0);
 
     void authenticate();
 
     const QString token();
+
+    bool init();
+
+signals:
+    void success();
+    void failed();
 
 private:
     void getToken();
@@ -56,14 +70,20 @@ private:
 
     QString iToken;
 
-private slots:
-
-    void deviceCodeResponse();
-
-    void tokenResponse();
-
 public slots:
 
+    void credentialsStored(const quint32);
+
+    void error(const SignOn::Error &);
+
+    void sessionResponse(const SignOn::SessionData &);
+
+private:
+    SignOn::Identity    *mIdentity;
+    SignOn::AuthSession *mSession;
+    Accounts::Account   *mAccount;
+    QString mToken;
+    QString mScope;
 };
 
 #endif // GAUTH_H

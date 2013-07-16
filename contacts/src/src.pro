@@ -14,7 +14,7 @@ TEMPLATE = lib
 #$$PKG_CONFIG_PATH = $$PKG_CONFIG_PATH:/usr/local/lib/pkgconfig/
 
 CONFIG += link_pkgconfig plugin mobility debug console
-PKGCONFIG += buteosyncfw
+PKGCONFIG += buteosyncfw signon-plugins libsignon-qt accounts-qt
 
 MOBILITY += contacts
 

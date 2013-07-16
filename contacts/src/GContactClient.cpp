@@ -133,7 +133,7 @@ GContactClient::startSync()
     connect(this, SIGNAL(syncFinished(Sync::SyncStatus)),
             this, SLOT(receiveSyncFinished(Sync::SyncStatus)));
 
-    QTimer::singleShot (0, this, SLOT (start ()));
+    mGoogleAuth->authenticate();
     return true;
 }
 
@@ -442,13 +442,39 @@ GContactClient::initConfig ()
 
     LOG_DEBUG("Initiating config...");
 
-    mGoogleAuth = new GAuth ();
+    quint32 accountId = 0;
+    QString scope = "";
+    QStringList accountList = iProfile.keyValues(Buteo::KEY_ACCOUNT_ID);
+    QStringList scopeList   = iProfile.keyValues(Buteo::KEY_REMOTE_DATABASE);
+    if (!accountList.isEmpty()) {
+        QString aId = accountList.first();
+        if (aId != NULL) {
+            accountId = aId.toInt();
+        }
+    } else {
+        return false;
+    }
+
+    if (!scopeList.isEmpty()) {
+        scope = scopeList.first();
+    }
+    mGoogleAuth = new GAuth (accountId, scope);
+    if (!mGoogleAuth->init()) {
+        return false;
+    }
+
+    connect(mGoogleAuth, SIGNAL(success()), this, SLOT(start()));
+    connect(mGoogleAuth, SIGNAL(failed()), this, SLOT(authenticationError()));
 
     mSyncDirection = iProfile.syncDirection();
 
     mConflictResPolicy = iProfile.conflictResolutionPolicy();
 
     return true;
+}
+
+void GContactClient::authenticationError() {
+    emit syncFinished (Sync::SYNC_AUTHENTICATION_FAILURE);
 }
 
 void
@@ -762,7 +788,8 @@ GContactClient::networkError (int errorCode)
     case 400:
         // Bad request. Better to bail out, since it could be a problem with the
         // data format of the request/response
-        mSyncStatus = Sync::SYNC_BAD_REQUEST;
+//        mSyncStatus = Sync::SYNC_BAD_REQUEST;
+        mSyncStatus = Sync::SYNC_ERROR;
         break;
     case 401:
         mSyncStatus = Sync::SYNC_AUTHENTICATION_FAILURE;
@@ -775,7 +802,8 @@ GContactClient::networkError (int errorCode)
     case 503:
     case 504:
         // Server failures
-        mSyncStatus = Sync::SYNC_SERVER_FAILURE;
+//        mSyncStatus = Sync::SYNC_SERVER_FAILURE;
+        mSyncStatus = Sync::SYNC_ERROR;
         break;
     default:
         break;

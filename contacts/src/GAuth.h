@@ -39,11 +39,27 @@ class GAuth : public QObject
 public:
     explicit GAuth(const quint32 accountId, const QString scope, QObject *parent = 0);
 
+    /**
+      *! \brief Performs authentication using oauth2
+      */
     void authenticate();
 
+    /**
+      *! \brief Returns the token obtained after authenticating
+      *! \return the token
+      */
     const QString token();
 
+    /**
+      *! \brief Initializes GAuth
+      */
     bool init();
+
+    /**
+      *! \brief Returns the token from file. Only for testing purposes
+      *! \return the token
+      */
+    static const QString tokenFromFile();
 
 signals:
     void success();

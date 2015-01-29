@@ -113,11 +113,31 @@ void GAuth::sessionResponse(const SessionData &sessionData) {
 
 const QString GAuth::token()
 {
+    FUNCTION_CALL_TRACE;
+
     if (mToken.isEmpty()) {
-        authenticate();
-    }
+    	authenticate();
+	}
 
     return mToken;
+}
+
+const QString GAuth::tokenFromFile ()
+{
+    FUNCTION_CALL_TRACE;
+
+    QString token = "";
+    // Read token from file. ** Only for testing purposes **
+    QFile file("/tmp/google-auth-token.txt");
+    
+    if (!file.open (QIODevice::ReadOnly | QIODevice::Text)) {
+        LOG_WARNING ("Error in opening file");
+    } else {
+        token = file.readAll ();
+        file.close ();
+    }
+
+    return token;
 }
 
 void GAuth::authenticate()

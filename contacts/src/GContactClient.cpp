@@ -58,7 +58,8 @@ GContactClient::GContactClient(const QString& aPluginName,
         const Buteo::SyncProfile& aProfile,
         Buteo::PluginCbInterface *aCbInterface) :
     ClientPlugin(aPluginName, aProfile, aCbInterface), mSlowSync (true), mContactBackend(0),
-    mTransport(0), mCommittedItems(0), mStartIndex (1), mHasMoreContactsToStore (false), mHasPhotosToStore (false)
+    mTransport(0), mCommittedItems(0), mStartIndex (1), mHasMoreContactsToStore (false), mHasPhotosToStore (false),
+    mUseAccounts(false)
 {
     FUNCTION_CALL_TRACE;
 }
@@ -79,6 +80,8 @@ GContactClient::init()
         mSlowSync = false;
 
     mContactBackend = new GContactsBackend ();
+    mUseAccounts = iProfile.boolKey (Buteo::KEY_USE_ACCOUNTS);
+
     if (initConfig () && initTransport ())
     {
         return true;
@@ -120,7 +123,9 @@ GContactClient::startSync()
 
     FUNCTION_CALL_TRACE;
 
-    if (!mContactBackend || !mGoogleAuth || !mTransport)
+    if (!mContactBackend || !mTransport)
+        return false;
+    if (mUseAccounts && !mGoogleAuth)
         return false;
 
     LOG_DEBUG ("Init done. Continuing with sync");
@@ -134,7 +139,11 @@ GContactClient::startSync()
     connect(this, SIGNAL(syncFinished(Sync::SyncStatus)),
             this, SLOT(receiveSyncFinished(Sync::SyncStatus)));
 
-    mGoogleAuth->authenticate();
+    if (mUseAccounts)
+        mGoogleAuth->authenticate();
+    else
+        start ();
+
     return true;
 }
 
@@ -203,15 +212,20 @@ bool
 GContactClient::cleanUp() {
     FUNCTION_CALL_TRACE;
 
-    mAccountId = 0;
-    QStringList accountList = iProfile.keyValues(Buteo::KEY_ACCOUNT_ID);
-    if (!accountList.isEmpty()) {
-        QString aId = accountList.first();
-        if (aId != NULL) {
-            mAccountId = aId.toInt();
-        }
+    if (mUseAccounts)
+    {
+        mAccountId = 0;
+    	QStringList accountList = iProfile.keyValues(Buteo::KEY_ACCOUNT_ID);
+    	if (!accountList.isEmpty()) {
+        	QString aId = accountList.first();
+        	if (aId != NULL) {
+            	mAccountId = aId.toInt();
+        	}
+    	}
+    	mSyncTarget = QString("buteo-") + QString::number(mAccountId);
+    } else {
+        mSyncTarget = "local";
     }
-    mSyncTarget = QString("buteo-") + QString::number(mAccountId);
 
     if (mContactBackend == NULL) {
         mContactBackend = new GContactsBackend();
@@ -460,31 +474,36 @@ GContactClient::initConfig ()
 
     LOG_DEBUG("Initiating config...");
 
-    mAccountId = 0;
-    QString scope = "";
-    QStringList accountList = iProfile.keyValues(Buteo::KEY_ACCOUNT_ID);
-    QStringList scopeList   = iProfile.keyValues(Buteo::KEY_REMOTE_DATABASE);
-    if (!accountList.isEmpty()) {
-        QString aId = accountList.first();
-        if (aId != NULL) {
-            mAccountId = aId.toInt();
-        }
+    if (mUseAccounts)
+    {
+        mAccountId = 0;
+    	QString scope = "";
+    	QStringList accountList = iProfile.keyValues(Buteo::KEY_ACCOUNT_ID);
+    	QStringList scopeList   = iProfile.keyValues(Buteo::KEY_REMOTE_DATABASE);
+    	if (!accountList.isEmpty()) {
+        	QString aId = accountList.first();
+        	if (aId != NULL) {
+            	mAccountId = aId.toInt();
+        	}
+    	} else {
+        	return false;
+    	}
+
+    	if (!scopeList.isEmpty()) {
+        	scope = scopeList.first();
+    	}
+    	mGoogleAuth = new GAuth (mAccountId, scope);
+    	if (!mGoogleAuth->init()) {
+        	return false;
+    	}
+
+    	mSyncTarget = QString("buteo-") + QString::number(mAccountId);
+
+    	connect(mGoogleAuth, SIGNAL(success()), this, SLOT(start()));
+    	connect(mGoogleAuth, SIGNAL(failed()), this, SLOT(authenticationError()));
     } else {
-        return false;
+        mSyncTarget = "local";
     }
-
-    if (!scopeList.isEmpty()) {
-        scope = scopeList.first();
-    }
-    mGoogleAuth = new GAuth (mAccountId, scope);
-    if (!mGoogleAuth->init()) {
-        return false;
-    }
-
-    mSyncTarget = QString("buteo-") + QString::number(mAccountId);
-
-    connect(mGoogleAuth, SIGNAL(success()), this, SLOT(start()));
-    connect(mGoogleAuth, SIGNAL(failed()), this, SLOT(authenticationError()));
 
     mSyncDirection = iProfile.syncDirection();
 
@@ -654,7 +673,11 @@ GContactClient::authToken ()
 {
     FUNCTION_CALL_TRACE;
 
-    QString token = mGoogleAuth->token ();
+    QString token = "";
+    if (mUseAccounts)
+        token = mGoogleAuth->token ();
+    else
+        token = GAuth::tokenFromFile ();
 
     return token;
 }
@@ -670,10 +693,15 @@ GContactClient::lastSyncTime ()
     // time is greater than the sync finish time
     // Because of this, the already added contacts are being sync'd again
     // for consecutive sync's
-    if (!sp->lastSuccessfulSyncTime().isNull ())
-        return sp->lastSuccessfulSyncTime ().addSecs (30);
-    else
-        return sp->lastSuccessfulSyncTime ();
+    if (sp)
+    {
+        if (!sp->lastSuccessfulSyncTime().isNull ())
+        	return sp->lastSuccessfulSyncTime ().addSecs (30);
+    	else
+        	return sp->lastSuccessfulSyncTime ();
+    } else {
+        new QDateTime();
+    }
 }
 
 /**
@@ -961,7 +989,7 @@ GContactClient::storeToRemote ()
     mTransport->reset ();
     mTransport->setUrl (mRemoteURI + "/batch");
     mTransport->setGDataVersionHeader ();
-    mTransport->setAuthToken (mGoogleAuth->token ());
+    mTransport->setAuthToken (authToken ());
     mTransport->setData (encodedContacts);
     mTransport->addHeader ("Content-Type", "application/atom+xml; charset=UTF-8; type=feed");
 
@@ -1180,7 +1208,7 @@ GContactClient::postAvatar (const QContactId contactId)
 
     mTransport->setUrl (mRemoteURI + "/photos/media/default/" + guid);
     mTransport->setGDataVersionHeader ();
-    mTransport->setAuthToken (mGoogleAuth->token ());
+    mTransport->setAuthToken (authToken ());
     mTransport->addHeader ("Content-Type", "image/*");
     mTransport->addHeader ("If-Match", "*"); // We just override other clients updates
 

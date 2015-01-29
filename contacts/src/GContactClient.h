@@ -48,7 +48,7 @@ class GParseStream;
 class GAuth;
 class GWriteStream;
 
-class BUTEOGCONTACTPLUGINSHARED_EXPORT GContactClient : Buteo::ClientPlugin
+class BUTEOGCONTACTPLUGINSHARED_EXPORT GContactClient : public Buteo::ClientPlugin
 {
 public:
     Q_OBJECT
@@ -223,6 +223,8 @@ private:
     Buteo::SyncProfile::SyncDirection mSyncDirection;
 
     Buteo::SyncProfile::ConflictResolutionPolicy mConflictResPolicy;
+
+    bool        mUseAccounts;
 
 #ifndef QT_NO_DEBUG
     friend class GContactClientTest;
